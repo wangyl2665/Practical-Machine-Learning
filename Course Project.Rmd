@@ -1,0 +1,198 @@
+---
+title: "Course Project"
+author: "WYL"
+date: "November 13, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.  In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har>(see the section on the Weight Lifting Exercise Dataset).
+
+
+## 2. Load Packages
+
+You can also embed plots, for example:
+
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+# data wrangling
+library(tidyverse)
+library(stringr)
+library(caTools)
+library(lubridate)
+
+# data assessment/visualizations
+library(ggplot2)
+library(gridExtra)
+library(corrplot)
+library(knitr)
+library(caret)
+library(randomForest) 
+```
+
+
+## 3. Load data and Clean data
+
+### 3.1 Read dataset
+The dataset I am using in this course project is the Human Activity Recognition Dataset. The data can be downloaded from following link:  
+training set : <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>  
+testing set: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+train <- read_csv('./pml-training.csv') %>% 
+        mutate(set = 'train')
+test <- read_csv('./pml-testing.csv') %>% 
+        select(-problem_id) %>% 
+        mutate(classe = NA) %>% 
+        mutate(set = 'test')
+# rbind train and test        
+full <- bind_rows(train, test)
+```
+
+### 3.2 Check dataset
+
+Check dataset structure and dimensions as follow:  
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+# check data
+glimpse(full)
+# dataset dimensions
+dim(full)
+# check first 6 lines 
+head(full)
+```
+
+
+### 3.3 Missingness
+
+#### 3.3.1 Check percent missing by feature
+Check for Missing values and plot percent missing data by feature:  
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+# Check for Missing values
+missing_values <- full %>% summarize_all(funs(sum(is.na(.))/n()))
+missing_values <- gather(missing_values, key="feature", value="missing_pct")
+# plot missing_pct
+missing_values %>% 
+        ggplot(aes(x=reorder(feature,-missing_pct),y=missing_pct)) +
+        geom_bar(stat="identity",fill="red") +
+        coord_flip() +
+        theme_bw()
+```
+
+#### 3.3.2 Remove features including more missings
+Remove features percent greater than 90% 
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+missing_values_featues <- missing_values %>% filter(missing_pct >= 0.9) %>% pull(feature)
+full_clean <- full %>% select(-missing_values_featues)
+```
+
+#### 3.3.3 Remove rows including less missings
+Remove rows including less missings 
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+full_clean <- full_clean[complete.cases(full_clean), ]
+anyNA(full_clean)
+```
+
+
+## 4. Feature engineering
+
+Delete unrelated to prediction features:  
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+full_features <- full_clean %>% 
+        select(-c(X1, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp))
+```
+
+
+## 5. Machine learning algorithm ~ Random Forest
+
+For this project, we will use random forest as a classifier because it is very powerful. 
+### 5.1 Prepare and keep data set.
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+trainA <- full_features %>%
+        filter(set == 'train') %>%
+        mutate_at('classe', .funs = as.factor) %>% 
+        select(-set)
+dim(trainA)
+```
+
+### 5.2 Split training and testing from raw trainset
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+inTrain <- createDataPartition(y=trainA$classe, p=0.75, list=FALSE)
+training <- trainA[inTrain,]
+testing <- trainA[-inTrain,]
+dim(training);dim(testing)
+####check the proprtion of classe rate in orginal training data, current traing and testing data
+round(prop.table(table(trainA$classe)*100),digits = 1)
+round(prop.table(table(training$classe)*100),digits = 1)
+round(prop.table(table(testing$classe)*100),digits = 1)
+```
+
+### 5.3 Random Forest and Cross Validation
+#### 5.3.1 Train Model
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+set.seed(1234)
+model_rf_down <- caret::train(classe ~ .,
+                              data = training,
+                              method = "rf",
+                              # preProcess normalization before training
+                              preProcess = c("scale", "center"),
+                              # training control for cross validation: k=10, and repeat 2 times
+                              trControl = trainControl(method = "repeatedcv", 
+                                                       number = 10, 
+                                                       repeats = 2, 
+                                                       savePredictions = TRUE, 
+                                                       verboseIter = FALSE,
+                                                       sampling = "down"))
+```
+
+#### 5.3.2 Check and Visualize Model
+Check model output:  
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+model_rf_down
+model_rf_down$finalModel
+```
+
+Manual plot variable importance:  
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+##### Get importance
+importance <- importance(model_rf_down$finalModel)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance[ ,'MeanDecreaseGini'],2))
+##### Create a rank variable based on importance
+rankImportance <- varImportance %>%
+        mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+##### Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+                           y = Importance, fill = Importance)) +
+        geom_bar(stat='identity') + 
+        geom_text(aes(x = Variables, y = 0.5, label = Rank),
+                  hjust=0, vjust=0.55, size = 4, colour = 'red') +
+        labs(x = 'Variables') +
+        coord_flip() + 
+        theme_bw()
+```
+
+Visual error curve:  
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+plot(model_rf_down$finalModel, ylim=c(0,0.10))
+legend('topright', colnames(model_rf_down$finalModel$err.rate), col=1:3, fill=1:3)
+```
+
+
+#### 5.3.2 Predict and Metrics
+
+```{r, echo=TRUE, message=F, warning=FALSE, comment=''}
+predicter <- predict(model_rf_down, newdata = testing)
+confusionMatrix(predicter, as.factor(testing$classe))
+```
+
+
+
+
+
+
+
+
